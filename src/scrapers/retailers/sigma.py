@@ -1,33 +1,12 @@
-from turtle import delay
 
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 import re
 import time
 import requests
-from unittest.mock import Mock, patch, call
 
-# Import fetch_page from whichever module you saved it in.
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 
-def test_fetch_page_retries_after_timeouts():
-    mock_response = Mock(status_code=200)
 
-    mock_get = Mock(
-        side_effect=[
-            requests.exceptions.Timeout(),
-            requests.exceptions.Timeout(),
-            mock_response
-        ]
-    )
-
-    # YOUR CODE HERE
-    with patch("requests.get", mock_get), patch("time.sleep") as mock_sleep:
-        response = fetch_page("https://example.com")
-        assert response is mock_response
-        assert mock_get.call_count == [call(2),call(4)]
-        print(mock_sleep.call_args_list)
-        assert mock_sleep.call_count == 2
 class SigmaScraper:
 
     def __init__(self):
@@ -36,6 +15,10 @@ class SigmaScraper:
         self.category_selector = (
             "a.cursor-pointer[href*='/en/category/']"
         )
+
+    # ----------------------------------------
+    # Category Discovery
+    # ----------------------------------------
 
     def discover_categories(self, html):
         soup = BeautifulSoup(html, "html.parser")
@@ -64,6 +47,10 @@ class SigmaScraper:
 
         return categories
 
+    # ----------------------------------------
+    # Product Specifications
+    # ----------------------------------------
+
     def extract_specifications(self, soup: BeautifulSoup) -> dict:
         containers = [
             soup.select_one('[id$="content-specifications"]'),
@@ -75,6 +62,7 @@ class SigmaScraper:
                 continue
 
             specifications = {}
+
             rows = container.select(":scope > div")
 
             for row in rows:
@@ -83,7 +71,12 @@ class SigmaScraper:
                 if len(paragraphs) < 2:
                     continue
 
-                label = paragraphs[0].get_text(strip=True).rstrip(":")
+                label = (
+                    paragraphs[0]
+                    .get_text(strip=True)
+                    .rstrip(":")
+                )
+
                 value = paragraphs[1].get_text(strip=True)
 
                 specifications[label] = value
@@ -92,6 +85,10 @@ class SigmaScraper:
                 return specifications
 
         return {}
+
+    # ----------------------------------------
+    # Product Listings
+    # ----------------------------------------
 
     def extract_product_listings(self, soup: BeautifulSoup) -> list:
         title_links = soup.select(
@@ -105,7 +102,10 @@ class SigmaScraper:
 
             product = {
                 "name": link.get_text(strip=True),
-                "url": urljoin(self.base_url, link.get("href", "")),
+                "url": urljoin(
+                    self.base_url,
+                    link.get("href", "")
+                ),
                 "price": None
             }
 
@@ -115,7 +115,12 @@ class SigmaScraper:
 
             if price_element:
                 price_text = price_element.get_text(strip=True)
-                clean_price = re.sub(r"\D", "", price_text)
+
+                clean_price = re.sub(
+                    r"\D",
+                    "",
+                    price_text
+                )
 
                 if clean_price:
                     product["price"] = int(clean_price)
@@ -123,29 +128,52 @@ class SigmaScraper:
             products.append(product)
 
         return products
-def fetch_page(url: str):
-    retryable_statuses = {500, 502, 503, 504}
 
-    for attempt in range(4):
-        try:
-            response = requests.get(url, timeout=15)
-            response.raise_for_status()
-            return response
+    # ----------------------------------------
+    # HTTP Fetcher with Retry Logic
+    # ----------------------------------------
 
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as error:
-            print("Network error:", error)
+    def fetch_page(self, url: str) -> requests.Response:
+        retryable_statuses = {500, 502, 503, 504}
 
-        except requests.exceptions.HTTPError as error:
-            status = error.response.status_code
+        for attempt in range(4):
+            try:
+                response = requests.get(
+                    url,
+                    timeout=15
+                )
 
-            if status in retryable_statuses:
+                response.raise_for_status()
+
+                return response
+
+            except (
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError
+            ) as error:
+                print("Network error:", error)
+
+                # Stop after the fourth failed request
+                if attempt == 3:
+                    raise
+
+            except requests.exceptions.HTTPError as error:
+                status = error.response.status_code
+
+                # Do not retry non-retryable HTTP errors
+                if status not in retryable_statuses:
+                    print(
+                        f"Non-retryable HTTP error: {status}"
+                    )
+                    raise
+
                 print(f"Retryable HTTP error: {status}")
-            else:
-                print(f"Non-retryable HTTP error: {status}")
-                return None
 
-        if attempt < 3:
-            delay_seconds = 2 ** (attempt + 1)
-            time.sleep(delay_seconds)
+                # Stop after the fourth failed request
+                if attempt == 3:
+                    raise
 
-    return None
+            # Shared exponential backoff
+            if attempt < 3:
+                delay_seconds = 2 ** (attempt + 1)
+                time.sleep(delay_seconds)
